@@ -11,12 +11,14 @@ const columns = [
   "行数上限",
   "刷新频率",
   "最近刷新",
-  "是否启用"
+  "是否启用",
+  "刷新边界"
 ]
 const actions = [
   "提交校验",
   "启用配置",
-  "停用配置"
+  "停用配置",
+  "刷新数据集"
 ]
 const statuses = [
   "草稿",
@@ -39,12 +41,21 @@ const stats = [
   }
 ]
 
-type Row = Record<string, string | number | null>
+type Row = Record<string, string | number | boolean | null>
+
+type ActionResultPayload = {
+  ok: boolean
+  message: string
+  reason?: string | null
+  retryable?: boolean
+}
 
 export default function DatasetView() {
   const [rows, setRows] = useState<Row[]>([])
   const [total, setTotal] = useState(0)
   const [errorMessage, setErrorMessage] = useState('')
+  const [noticeMessage, setNoticeMessage] = useState('')
+  const [lastFailure, setLastFailure] = useState<{ id: number; action: string } | null>(null)
   const [filters, setFilters] = useState<Record<string, string>>({})
   const filterFields = useMemo(() => columns.slice(0, 3), [])
 
@@ -70,17 +81,36 @@ export default function DatasetView() {
 
   async function runAction(action: string, row: Row) {
     setErrorMessage('')
+    setNoticeMessage('')
+    setLastFailure(null)
     try {
       const response = await request(`${ENDPOINT}/${row.id}/actions`, {
         method: 'POST',
         body: JSON.stringify({ action }),
       })
+      const payload = (await response.json().catch(() => null)) as ActionResultPayload | null
       if (!response.ok) {
-        throw new Error('分析数据集动作未生效，请稍后重试')
+        throw new Error(payload?.message || '分析数据集动作未生效，请稍后重试')
+      }
+      if (payload && !payload.ok) {
+        setErrorMessage(payload.message)
+        setLastFailure(payload.retryable ? { id: Number(row.id), action } : null)
+      } else {
+        setNoticeMessage(payload?.message ?? `${action}已完成`)
       }
       await reload()
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '分析数据集操作失败')
+    }
+  }
+
+  async function retryLastFailure() {
+    if (!lastFailure) {
+      return
+    }
+    const row = rows.find((item) => Number(item.id) === lastFailure.id)
+    if (row) {
+      await runAction(lastFailure.action, row)
     }
   }
 
@@ -89,7 +119,7 @@ export default function DatasetView() {
       <header className="page-head">
         <div>
           <h2>分析数据集管理</h2>
-          <p className="page-desc">维护分析可用的数据集定义、字段范围与刷新策略，支撑多维度分析。</p>
+          <p className="page-desc">维护分析可用的数据集定义、字段范围与刷新策略；依赖的数据源停用后刷新会被同步拦下。</p>
         </div>
         <div className="page-actions">
           <button className="btn primary" type="button" onClick={() => setErrorMessage('数据集登记入口尚未接入审批流')}>
@@ -102,12 +132,23 @@ export default function DatasetView() {
       </header>
 
       <div className="stat-row">
-        {stats.map((item) => (
+        {stats.map((item, index) => (
           <article key={item.label} className="stat-card">
             <span className="stat-label">{item.label}</span>
-            <strong className="stat-value">{item.value}</strong>
+            <strong className="stat-value">
+              {index === 0
+                ? total
+                : index === 1
+                  ? rows.filter((row) => row.status === '待校验').length
+                  : rows.filter((row) => row.status === '已启用').length}
+            </strong>
           </article>
         ))}
+        <article className="stat-card">
+          <span className="stat-label">可刷新数据集</span>
+          <strong className="stat-value">{rows.filter((row) => row['刷新可用']).length} / {rows.length}</strong>
+          <span className="stat-label">{rows.filter((row) => !row['刷新可用'] && row.status !== '已停用').length} 条被连接状态拦下</span>
+        </article>
       </div>
 
       <form className="filter-bar" onSubmit={(event) => { event.preventDefault(); void reload() }}>
@@ -135,7 +176,15 @@ export default function DatasetView() {
         <tbody>
           {rows.map((row) => (
             <tr key={String(row.id)}>
-              {columns.map((column) => <td key={column}>{row[column] ?? '—'}</td>)}
+              {columns.map((column) => (
+                <td key={column}>
+                  {column === '刷新边界'
+                    ? (row[column] ?? '—')
+                    : column === '是否启用' && row['刷新可用'] === false && row.status !== '已停用'
+                      ? `${row[column] ?? '—'}（刷新已拦下）`
+                      : (row[column] ?? '—')}
+                </td>
+              ))}
               <td className="row-actions">
                 {actions.map((action) => (
                   <button key={action} className="link" type="button" onClick={() => void runAction(action, row)}>
@@ -155,7 +204,17 @@ export default function DatasetView() {
 
       <footer className="page-foot">
         <span>共 {total} 条分析数据集记录</span>
-        {errorMessage && <span className="error-text">{errorMessage}</span>}
+        {noticeMessage && <span className="ok-text">{noticeMessage}</span>}
+        {errorMessage && (
+          <span className="error-text">
+            {errorMessage}
+            {lastFailure && (
+              <button className="link" type="button" onClick={() => void retryLastFailure()}>
+                重试
+              </button>
+            )}
+          </span>
+        )}
       </footer>
     </section>
   )

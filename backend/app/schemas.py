@@ -13,12 +13,17 @@ class PageResult(BaseModel, Generic[T]):
     total: int
     page: int = 1
     size: int = 20
+    meta: dict[str, Any] | None = None
 
 
 class ActionResult(BaseModel):
     ok: bool
     message: str
     entry: dict[str, Any] | None = None
+    reason: str | None = None
+    retryable: bool = False
+    pool: dict[str, Any] | None = None
+    extra: dict[str, Any] | None = None
 
 
 class EntryPayload(BaseModel):
